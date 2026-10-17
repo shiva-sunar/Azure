@@ -1,0 +1,51 @@
+
+az group list --output table
+az group create --name "myResourceGroupName" --location BelgiumCentral
+az group delete --name "myResourceGroupName" --yes --no-wait
+az resource list --resource-group "myResourceGroupName" --output table
+
+
+rm /home/shiva/.ssh/known_hosts
+az group create --name "myResourceGroupName" --location BelgiumCentral
+
+az network route-table create --name publictable --resource-group "myResourceGroupName" --disable-bgp-route-propagation false
+
+az network vnet create --name vnet --resource-group "myResourceGroupName" --address-prefixes 10.0.0.0/16 --subnet-name publicsubnet --subnet-prefixes 10.0.0.0/24
+
+az network vnet subnet create --name privatesubnet --vnet-name vnet --resource-group "myResourceGroupName" --address-prefixes 10.0.1.0/24
+
+az network vnet subnet create --name dmzsubnet --vnet-name vnet --resource-group "myResourceGroupName" --address-prefixes 10.0.2.0/24
+
+az network vnet subnet list --resource-group "myResourceGroupName" --vnet-name vnet --output table
+
+az network vnet subnet update --name publicsubnet --vnet-name vnet --resource-group "myResourceGroupName" --route-table publictable
+
+az network route-table route create --route-table-name publictable --resource-group "myResourceGroupName" --name productionsubnet --address-prefix 10.0.1.0/24 --next-hop-type VirtualAppliance --next-hop-ip-address 10.0.2.4
+
+az vm create --resource-group "myResourceGroupName" --name nva --vnet-name vnet --subnet dmzsubnet --image Ubuntu2204 --admin-username azureuser --admin-password Azure@12345 --size Standard_B2ats_v2 #--subnet-address-prefix 10.0.2.0/24
+
+NICID=$(az vm nic list --resource-group "myResourceGroupName" --vm-name nva --query "[].{id:id}" --output tsv)
+echo $NICID
+
+NICNAME=$(az vm nic show --resource-group "myResourceGroupName" --vm-name nva --nic $NICID --query "{name:name}" --output tsv)
+echo $NICNAME
+
+az network nic update --name $NICNAME --resource-group "myResourceGroupName" --ip-forwarding true
+
+NVAIP="$(az vm list-ip-addresses --resource-group "myResourceGroupName" --name nva --query "[].virtualMachine.network.publicIpAddresses[*].ipAddress" --output tsv)"
+echo $NVAIP
+
+ssh -t -o StrictHostKeyChecking=no azureuser@$NVAIP 'sudo sysctl -w net.ipv4.ip_forward=1; exit;'
+
+az vm create --resource-group "myResourceGroupName" --name public --vnet-name vnet --subnet publicsubnet --image Ubuntu2204 --admin-username azureuser --no-wait --custom-data cloud-init.txt --admin-password Azure@12345 --size Standard_B2ats_v2 #--subnet-address-prefix 10.0.0.0/24 
+
+az vm create --resource-group "myResourceGroupName" --name private --vnet-name vnet --subnet privatesubnet --image Ubuntu2204 --admin-username azureuser --no-wait --custom-data cloud-init.txt --admin-password Azure@12345 --size Standard_B2ats_v2 #--subnet-address-prefix 10.0.1.0/24 
+
+PUBLICIP="$(az vm list-ip-addresses --resource-group "myResourceGroupName" --name public --query "[].virtualMachine.network.publicIpAddresses[*].ipAddress" --output tsv)"
+echo $PUBLICIP
+
+PRIVATEIP="$(az vm list-ip-addresses --resource-group "myResourceGroupName" --name private --query "[].virtualMachine.network.publicIpAddresses[*].ipAddress" --output tsv)"
+echo $PRIVATEIP
+
+ssh -t -o StrictHostKeyChecking=no azureuser@$PUBLICIP 'traceroute private --type=icmp; exit'
+ssh -t -o StrictHostKeyChecking=no azureuser@$PRIVATEIP 'traceroute public --type=icmp; exit'
